@@ -1,0 +1,91 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      packages: write
+
+    env:
+      REGISTRY: ghcr.io
+      REPO: sippava
+      IMAGE_NAME_FRONTEND: linux-administration-frontend
+      IMAGE_NAME_BACKEND: linux-administration-backend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build frontend image
+        run: |
+          cd lemp-kube-app/frontend
+          docker build -t $REGISTRY/$REPO/$IMAGE_NAME_FRONTEND:latest .
+
+      - name: Push frontend image
+        run: |
+          docker push $REGISTRY/$REPO/$IMAGE_NAME_FRONTEND:latest
+
+      - name: Build backend image
+        run: |
+          cd lemp-kube-app/backend
+          docker build -t $REGISTRY/$REPO/$IMAGE_NAME_BACKEND:latest .
+
+      - name: Push backend image
+        run: |
+          docker push $REGISTRY/$REPO/$IMAGE_NAME_BACKEND:latest
+
+      - name: Install Minikube
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y conntrack
+          curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+          sudo install minikube-linux-amd64 /usr/local/bin/minikube
+
+      - name: Start Minikube
+        run: |
+          minikube start --driver=docker
+          kubectl get nodes
+
+      - name: Deploy MySQL
+        run: |
+          kubectl apply -f lemp-kube-app/kubernetes/mysql-deployment.yaml
+          kubectl apply -f lemp-kube-app/kubernetes/mysql-service.yaml
+
+      - name: Deploy Backend
+        run: |
+          kubectl apply -f lemp-kube-app/kubernetes/backend-deployment.yaml
+          kubectl apply -f lemp-kube-app/kubernetes/backend-service.yaml
+
+      - name: Deploy Frontend
+        run: |
+          kubectl apply -f lemp-kube-app/kubernetes/frontend-deployment.yaml
+          kubectl apply -f lemp-kube-app/kubernetes/frontend-service.yaml
+
+      - name: Wait for pods to be ready
+        run: |
+          kubectl wait --for=condition=available deployment/backend --timeout=120s
+          kubectl wait --for=condition=available deployment/frontend --timeout=120s
+          kubectl wait --for=condition=available deployment/mysql --timeout=120s
+
+      - name: Test backend health endpoint
+        run: |
+          BACKEND_IP=$(kubectl get svc backend -o jsonpath='{.spec.clusterIP}')
+          curl -f http://$BACKEND_IP:5000/api/health
+
+      - name: Test frontend NodePort
+        run: |
+          NODE_IP=$(minikube ip)
+          curl -f http://$NODE_IP:30080
